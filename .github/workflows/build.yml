@@ -17,10 +17,11 @@ jobs:
             mkdir -p app/src/main/res/mipmap-$d
             [ -f ic_launcher_$d.png ] && mv ic_launcher_$d.png app/src/main/res/mipmap-$d/ic_launcher.png
           done
-          find . -path ./.git -prune -o -type f -not -path './.github/*' -print | sort
+          true
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
+      - name: Aceitar licencas do Android
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.9" }
       - run: gradle assembleDebug --no-daemon
