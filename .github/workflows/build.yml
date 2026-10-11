@@ -1,0 +1,30 @@
+name: Gerar APK
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Arrumar pastas
+        run: |
+          mkdir -p app/src/main/java/app/mochianimes/tv app/src/main/res/drawable-xhdpi
+          [ -f app-build.gradle.kts ] && mv app-build.gradle.kts app/build.gradle.kts
+          [ -f AndroidManifest.xml ] && mv AndroidManifest.xml app/src/main/AndroidManifest.xml
+          [ -f MainActivity.kt ] && mv MainActivity.kt app/src/main/java/app/mochianimes/tv/MainActivity.kt
+          [ -f tv_banner.png ] && mv tv_banner.png app/src/main/res/drawable-xhdpi/tv_banner.png
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            mkdir -p app/src/main/res/mipmap-$d
+            [ -f ic_launcher_$d.png ] && mv ic_launcher_$d.png app/src/main/res/mipmap-$d/ic_launcher.png
+          done
+          find . -path ./.git -prune -o -type f -not -path './.github/*' -print | sort
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.9" }
+      - run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MochiTV-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
