@@ -3,10 +3,12 @@ package app.mochianimes.tv
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +18,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
@@ -64,8 +67,9 @@ class MainActivity : Activity() {
     private var pressing = false
     private var downTime = 0L
 
-    private val cursorOn get() = siteWantsCursor || customView != null
-    private val target: View get() = customView ?: web
+    private var popup: WebView? = null          // janela do login Google
+    private val cursorOn get() = siteWantsCursor || customView != null || popup != null
+    private val target: View get() = popup ?: customView ?: web
 
     /** O site chama MochiTV.cursor(true/false) quando abre/fecha a tela de info. */
     inner class Bridge {
@@ -82,24 +86,43 @@ class MainActivity : Activity() {
         root.addView(cursor, FrameLayout.LayoutParams(-2, -2))
         setContentView(root)
 
-        web.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-            setSupportMultipleWindows(false)
-            javaScriptCanOpenWindowsAutomatically = false
-            userAgentString = userAgentString.replace("; wv", "") + " AndroidTV MochiTVApp"
-        }
+        configure(web)
         web.addJavascriptInterface(Bridge(), "MochiTV")
         web.webViewClient = object : WebViewClient() {
-            // só o site principal abre na tela principal; link externo não tira você do app
+            // só o site e o login Google abrem na tela principal; link de anúncio não tira você do app
             override fun shouldOverrideUrlLoading(v: WebView, r: android.webkit.WebResourceRequest): Boolean {
                 if (!r.isForMainFrame) return false
-                return r.url.host?.endsWith("netlify.app") != true
+                return !hostOk(r.url.host)
             }
         }
         web.webChromeClient = object : WebChromeClient() {
+            // janela do login Google (Firebase abre um popup). Qualquer outro popup é fechado.
+            override fun onCreateWindow(v: WebView, isDialog: Boolean, isUserGesture: Boolean, msg: android.os.Message): Boolean {
+                if (popup != null || !isUserGesture) return false
+                val child = WebView(this@MainActivity)
+                configure(child)
+                child.webViewClient = object : WebViewClient() {
+                    override fun onPageStarted(w: WebView, url: String?, f: Bitmap?) {
+                        val u = url ?: return
+                        if (u.startsWith("about:")) return
+                        if (!hostOk(Uri.parse(u).host)) ui.post { closePopup() }
+                    }
+                    override fun shouldOverrideUrlLoading(w: WebView, r: android.webkit.WebResourceRequest): Boolean {
+                        if (r.url.scheme == "about" || hostOk(r.url.host)) return false
+                        ui.post { closePopup() }; return true
+                    }
+                }
+                child.webChromeClient = object : WebChromeClient() {
+                    override fun onCloseWindow(w: WebView?) { ui.post { closePopup() } }
+                }
+                popup = child
+                root.addView(child, root.indexOfChild(cursor), FrameLayout.LayoutParams(-1, -1))
+                (msg.obj as WebView.WebViewTransport).webView = child
+                msg.sendToTarget()
+                applyCursor()
+                return true
+            }
+            override fun onCloseWindow(w: WebView?) { if (w === popup) ui.post { closePopup() } }
             override fun onShowCustomView(v: View, cb: CustomViewCallback) {
                 customView = v; customCb = cb
                 root.addView(v, root.indexOfChild(cursor), FrameLayout.LayoutParams(-1, -1))
@@ -118,6 +141,38 @@ class MainActivity : Activity() {
         web.requestFocus()
         web.loadUrl(SITE)
         root.post { cx = root.width / 2f; cy = root.height / 2f; place() }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun configure(w: WebView) {
+        w.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            userAgentString = userAgentString.replace("; wv", "")
+                .replace(Regex("Version/\\d+\\.\\d+ "), "") + " AndroidTV MochiTVApp"
+        }
+        val cm = CookieManager.getInstance()
+        cm.setAcceptCookie(true)
+        cm.setAcceptThirdPartyCookies(w, true)
+    }
+
+    /** Só estes sites podem abrir (site + login Google). Todo o resto (anúncios de embed) é bloqueado. */
+    private fun hostOk(h: String?): Boolean {
+        if (h == null) return false
+        val ok = listOf("netlify.app", "google.com", "firebaseapp.com", "googleapis.com",
+            "gstatic.com", "googleusercontent.com", "accounts.youtube.com")
+        return ok.any { h == it || h.endsWith(".$it") }
+    }
+
+    private fun closePopup() {
+        popup?.let { root.removeView(it); it.destroy() }
+        popup = null
+        web.requestFocus()
+        applyCursor()
     }
 
     private fun applyCursor() {
@@ -140,7 +195,7 @@ class MainActivity : Activity() {
             val dt = if (lastTick == 0L) 16L else min(now - lastTick, 50L)
             lastTick = now
             val heldMs = now - holdStart
-            val speed = min(2600f, 750f + heldMs * 3.2f)       // px por segundo (acelera)
+            val speed = min(1800f, 520f + heldMs * 2.2f)       // px por segundo (acelera)
             val step = speed * dt / 1000f
             var dx = 0f; var dy = 0f
             if (KeyEvent.KEYCODE_DPAD_LEFT in held) dx -= step
@@ -159,11 +214,14 @@ class MainActivity : Activity() {
         val now = SystemClock.uptimeMillis()
         if (pressing) { sendTouch(MotionEvent.ACTION_MOVE); return }       // arrastar (barra de tempo)
         if (now - lastHover > 90) { lastHover = now; hover() }            // faz o player mostrar os controles
-        if (customView == null && now - lastScroll > 40) {                  // rolagem na borda
-            val s = if (cy > root.height - 70) 38 else if (cy < 70) -38 else 0
-            if (s != 0) {
+        if (customView == null && now - lastScroll > 40 && now - holdStart > 250) {   // rolagem na borda
+            val sc = if (KeyEvent.KEYCODE_DPAD_DOWN in held && cy > root.height - 70) 38
+                     else if (KeyEvent.KEYCODE_DPAD_UP in held && cy < 70) -38 else 0
+            if (sc != 0) {
                 lastScroll = now
-                web.evaluateJavascript("(function(){var m=document.querySelector('.modal.open');if(m)m.scrollBy(0,$s)})()", null)
+                val js = if (popup != null) "window.scrollBy(0,$sc)"
+                         else "(function(){var m=document.querySelector('.modal.open');if(m)m.scrollBy(0,$sc)})()"
+                (popup ?: web).evaluateJavascript(js, null)
             }
         }
     }
@@ -199,7 +257,7 @@ class MainActivity : Activity() {
                         if (held.add(e.keyCode)) {
                             if (held.size == 1) holdStart = lastKey
                             // pulo imediato no primeiro toque, pra não parecer travado
-                            val j = 28f
+                            val j = 20f
                             move(when (e.keyCode) { KeyEvent.KEYCODE_DPAD_LEFT -> -j; KeyEvent.KEYCODE_DPAD_RIGHT -> j; else -> 0f },
                                  when (e.keyCode) { KeyEvent.KEYCODE_DPAD_UP -> -j; KeyEvent.KEYCODE_DPAD_DOWN -> j; else -> 0f })
                             ui.removeCallbacks(tick); ui.post(tick)
@@ -221,6 +279,7 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (popup != null) { closePopup(); return }
         if (customView != null) { web.webChromeClient?.onHideCustomView(); return }
         // pergunta ao site se tem algo pra fechar (tela de info, busca, aba); se não, sai do app
         web.evaluateJavascript(
