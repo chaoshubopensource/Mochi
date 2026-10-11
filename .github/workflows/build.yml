@@ -4,6 +4,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Arrumar pastas
@@ -20,8 +21,6 @@ jobs:
           true
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      - name: Aceitar licencas do Android
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: "8.9" }
       - run: gradle assembleDebug --no-daemon
